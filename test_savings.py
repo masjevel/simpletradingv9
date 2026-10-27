@@ -125,3 +125,20 @@ def test_parse_extra_deposits_any_number_of_rows():
     assert incomplete == 2  # rad 3 (saknar datum) och rad 4 (0 kr); helt tom rad 5 ignoreras
     assert savings.parse_extra_deposits(savings.empty_extra_table()) == ([], 0)
     assert savings.parse_extra_deposits(None) == ([], 0)
+
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("10000", 10000.0), ("10 000", 10000.0), ("10\u00a0000 kr", 10000.0), ("10.000", 10000.0),
+    ("1.234.567", 1234567.0), ("1 234,50", 1234.5), ("2,5", 2.5), (" 0 ", 0.0), (5000, 5000.0),
+    ("", None), ("abc", None), ("-100", None), ("1,2,3", None), (None, None),
+])
+def test_parse_amount(text, expected):
+    assert savings.parse_amount(text) == expected
+
+
+def test_format_amount():
+    assert savings.format_amount(10000) == "10 000"
+    assert savings.format_amount(1234567.4) == "1 234 567"
+    assert savings.format_amount(0) == "0"
+    assert savings.format_amount(float("nan")) == ""

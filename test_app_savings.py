@@ -12,7 +12,7 @@ import config
 import reentry
 
 
-def _fake(monkeypatch, rate_ok=True):
+def _fake(monkeypatch, rate_ok=True, cli=None):
     dates = pd.bdate_range("2010-01-01", "2019-12-31")
     x = np.arange(len(dates))
     sweden = pd.DataFrame({"Close": 100 + x * 0.02 + 15 * np.sin(x / 120)}, index=dates)
@@ -30,6 +30,7 @@ def _fake(monkeypatch, rate_ok=True):
     fake.fetch_fx_rate = lambda: pd.Series(10.0, index=dates)
     fake.fetch_ki_barometer = lambda: ki
     fake.fetch_riksbank_rate = (lambda *a, **k: pd.Series(0.02, index=dates)) if rate_ok else (lambda *a, **k: None)
+    fake.fetch_us_cli = lambda *a, **k: cli
     monkeypatch.setitem(sys.modules, "data", fake)
     return AppTest.from_file(str(Path(__file__).with_name("app.py")), default_timeout=120)
 
@@ -95,3 +96,75 @@ def test_trend_reference_follows_portfolio_weights(monkeypatch):
     world = 50 + np.arange(len(ref)) * 0.03 - 8 * np.sin(np.arange(len(ref)) / 60)
     # Referensen ska vara Global-serien (normaliserad), inte Sverige.
     np.testing.assert_allclose(ref.to_numpy(), world / world[0], rtol=1e-9)
+
+
+def _metric(app, label):
+    return next(m.value for m in app.tabs[4].metric if m.label == label)
+
+
+def test_amount_fields_show_spaces_and_form_submit(monkeypatch):
+    app = _fake(monkeypatch).run()
+    assert not app.exception
+    assert app.text_input(key="sv_monthly").value == "2 000"
+    assert app.text_input(key="pf_portfolio_initial_capital").value == "100 000"
+    before = _metric(app, "Insatt totalt")
+    # I formuläret räknas inget om förrän knappen trycks.
+    app.text_input(key="sv_initial").set_value("10000")
+    app.run()
+    assert _metric(app, "Insatt totalt") == before
+    app.text_input(key="sv_initial").set_value("10000")
+    next(b for b in app.button if b.label == "Beräkna sparplanen").click().run()
+    assert not app.exception
+    assert app.text_input(key="sv_initial").value == "10 000"
+    to_num = lambda v: float(v.replace(" kr", "").replace("\xa0", "").replace(" ", ""))
+    assert to_num(_metric(app, "Insatt totalt")) - to_num(before) == pytest.approx(10_000)
+    # Ogiltigt belopp ger varning och standardvärdet används.
+    app.text_input(key="sv_monthly").set_value("tvåtusen")
+    next(b for b in app.button if b.label == "Beräkna sparplanen").click().run()
+    assert any("är inte ett belopp" in w.value for w in app.tabs[4].warning)
+    # Startkapital utanför formulär formateras direkt.
+    app.text_input(key="pf_portfolio_initial_capital").set_value("250000").run()
+    assert app.text_input(key="pf_portfolio_initial_capital").value == "250 000"
+    assert any("Startkapital: 250 000 kr" in m.value for m in app.tabs[3].markdown)
+
+
+def test_us_cli_signal_source_and_long_history(monkeypatch):
+    months = pd.date_range("1990-01-31", "2019-12-31", freq="ME")
+    t = np.arange(len(months))
+    cli = pd.Series(100 + 1.5 * np.sin(t / 14), index=months)
+    app = _fake(monkeypatch, cli=cli).run()
+    assert not app.exception
+    app.selectbox(key="pf_signal_source").set_value("us_cli").run()
+    assert not app.exception
+    assert app.slider(key="pf_pub_lag_us").value == config.DEFAULT_US_CLI_LAG_DAYS
+    assert any("Signalkälla: USA" in m.value for m in app.tabs[3].markdown)
+    assert any("OECD-data är öppna" in c.value for c in app.tabs[3].caption)
+    labels = [m.label for m in app.tabs[3].metric]
+    assert "CAGR (KI-strategi)" in labels
+    app.checkbox(key="pf_us_long").set_value(True).run()
+    assert not app.exception
+    assert any(m.label == "CAGR KI USA (lång)" for m in app.tabs[3].metric)
+    # Sparfliken använder samma signalkälla.
+    assert "Slutvärde KI-strategi" in [m.label for m in app.tabs[4].metric]
+
+
+def test_us_cli_missing_gives_clear_error(monkeypatch):
+    app = _fake(monkeypatch, cli=None).run()
+    app.selectbox(key="pf_signal_source").set_value("us_cli").run()
+    assert not app.exception
+    assert any("OECD:s ledande indikator för USA kunde inte hämtas" in e.value for e in app.tabs[3].error)
+    assert any("Portföljdata saknas" in i.value for i in app.tabs[4].info)
+
+
+def test_sweep_runs_only_when_requested(monkeypatch):
+    import portfolio
+    calls = []
+    original = portfolio.simulate_portfolio
+    monkeypatch.setattr(portfolio, "simulate_portfolio", lambda *a, **k: (calls.append(1), original(*a, **k))[1])
+    app = _fake(monkeypatch).run()
+    base = len(calls)
+    calls.clear()
+    app.checkbox(key="pf_sweep_run").set_value(True).run()
+    assert not app.exception
+    assert len(calls) - base >= 20  # 5 regler × 4 avriskningsgrader
+    assert any("Återköpsregel" in df.value.columns for df in app.tabs[3].dataframe)

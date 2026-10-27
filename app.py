@@ -25,10 +25,11 @@ import portfolio
 import reentry
 import research
 import savings
+import signal_sources
 import dataclasses
 from datetime import date
 import signals as signals_mod
-from data import fetch_ki_barometer, fetch_fx_rate, fetch_price_series, fetch_riksbank_rate, fetch_vix
+from data import fetch_ki_barometer, fetch_fx_rate, fetch_price_series, fetch_riksbank_rate, fetch_us_cli, fetch_vix
 
 logger = logging.getLogger("simpletradingv3.app")
 
@@ -51,6 +52,37 @@ def fmt_ratio(x: float, decimals: int = 2) -> str:
 
 
 H = config.help_text
+
+
+def kr_input(container, label: str, default: float, key: str, help_text: str | None = None,
+             min_value: float = 0.0, max_value: float = 1e10, reformat_on_change: bool = True) -> float:
+    """Beloppsfält som visar mellanslag som tusentalsavgränsare (10 000) och tolkar '10000', '10 000 kr' m.m.
+
+    Utanför formulär formateras texten direkt när fältet lämnas. I ett formulär (där ändringar inte får
+    egna återanrop) formateras alla beloppsfält när formuläret skickas, se normalize_amount_keys.
+    """
+    if key not in st.session_state:
+        st.session_state[key] = savings.format_amount(default)
+
+    def _normalize():
+        v = savings.parse_amount(st.session_state.get(key))
+        if v is not None:
+            st.session_state[key] = savings.format_amount(min(max(v, min_value), max_value))
+
+    container.text_input(label, key=key, help=help_text, on_change=_normalize if reformat_on_change else None)
+    v = savings.parse_amount(st.session_state.get(key))
+    if v is None:
+        container.warning(f"”{st.session_state.get(key)}” är inte ett belopp. {savings.format_amount(default)} kr används.")
+        return float(default)
+    return float(min(max(v, min_value), max_value))
+
+
+def normalize_amount_keys(*keys: str) -> None:
+    """Formaterar om beloppsfält i ett formulär (anropas när formuläret skickas)."""
+    for key in keys:
+        v = savings.parse_amount(st.session_state.get(key))
+        if v is not None:
+            st.session_state[key] = savings.format_amount(v)
 
 
 def param_guide(*keys: str) -> None:
@@ -164,7 +196,7 @@ with tab3:
         st.caption(active_description)
         st.markdown("**Modell som testas just nu**")
         st.write(f"Tillgång: {ticker} · SMA: {sma_trend_period} dagar · RSI köp: <{buy_rsi_threshold} · VIX köp: >{vix_panic_threshold:g} · MACD säljfilter RSI: >{sell_macd_rsi_filter} · Cooldown: {cooldown_bars} handelsdagar")
-        st.write(f"Execution: {execution_method_label} · Courtage: {cost_bps/100:.2f} % · Slippage: {slippage_bps/100:.2f} % · Startkapital: {initial_capital:,.0f} USD · Riskfri jämförelseränta: {tech_risk_free:.1%}")
+        st.write(f"Execution: {execution_method_label} · Courtage: {cost_bps/100:.2f} % · Slippage: {slippage_bps/100:.2f} % · Startkapital: {savings.format_amount(initial_capital)} USD · Riskfri jämförelseränta: {tech_risk_free:.1%}")
 
 with tab2:
     st.button("Återställ standard – KI Konjunktur", key="reset_ki", on_click=reset_model, args=("ki_",))
@@ -192,6 +224,12 @@ with tab4:
     pf_model_box = st.container(border=True)
     st.caption("Inställningarna här påverkar endast KI-portföljbacktestet, inklusive jämförelserna nedan.")
     with st.expander("KI-signal"):
+        pf_signal_source = st.selectbox("Signalkälla", list(config.SIGNAL_SOURCES.keys()), format_func=lambda k: config.SIGNAL_SOURCES[k],
+                                        key="pf_signal_source", help=H("pf_signal_source"))
+        us_source = pf_signal_source == "us_cli"
+        if us_source:
+            st.caption("OECD CLI för USA räknas om till KI:s skala: 100 = normalt, 110 = en standardavvikelse över normalt, "
+                       "med enbart historik som var känd vid varje tidpunkt. Gränserna nedan betyder alltså samma sak som för KI.")
         pf_ki_sell_threshold = st.slider("KI säljgräns (överhettning)", 90, 140, config.DEFAULT_KI_SELL_THRESHOLD, 1, help=H("ki_sell"), key="pf_pf_ki_sell_threshold")
         pf_ki_buy_threshold = st.slider("KI köpgräns (lågkonjunktur)", 60, 110, config.DEFAULT_KI_BUY_THRESHOLD, 1, help=H("ki_buy"), key="pf_pf_ki_buy_threshold")
         pf_ki_duration_months = st.slider("Antal bekräftande månader", 1, 12, config.DEFAULT_KI_DURATION_MONTHS, 1, help=H("ki_months"), key="pf_pf_ki_duration_months")
@@ -200,7 +238,10 @@ with tab4:
         pf_ki_effective_floor = pf_ki_buy_threshold if pf_ki_buyback_rule == "flat_or_up" else pf_ki_floor_threshold
         if pf_ki_buyback_rule == "flat_or_up":
             st.caption(config.EXPLANATIONS["ki_flat_or_up"] + " Det separata golvet används inte för denna regel.")
-        pf_pub_lag = st.slider("Publiceringsfördröjning (dagar efter månadsslut)", 0, 30, config.KI_PUBLICATION_LAG_DAYS, 1, key="pf_pub_lag", help=H("ki_lag"))
+        if us_source:
+            pf_pub_lag = st.slider("Publiceringsfördröjning (dagar efter månadsslut)", 0, 45, config.DEFAULT_US_CLI_LAG_DAYS, 1, key="pf_pub_lag_us", help=H("ki_lag"))
+        else:
+            pf_pub_lag = st.slider("Publiceringsfördröjning (dagar efter månadsslut)", 0, 30, config.KI_PUBLICATION_LAG_DAYS, 1, key="pf_pub_lag", help=H("ki_lag"))
     with st.expander("Återköp – kombinerade signaler (valfritt)", expanded=False):
         reentry_mode = st.radio("Återköpsläge", list(config.REENTRY_MODES.keys()), format_func=lambda k: config.REENTRY_MODES[k],
                                 key="pf_reentry_mode", help=H("reentry_mode"))
@@ -247,7 +288,7 @@ with tab4:
         w_sweden = st.slider("Vikt Sverige (%)", 0, 100, int(config.DEFAULT_PORTFOLIO_WEIGHTS["sweden"] * 100), 1, help=H("pf_weights"), key="pf_w_sweden")
         w_em = st.slider("Vikt Emerging Markets (%)", 0, 100, int(config.DEFAULT_PORTFOLIO_WEIGHTS["em"] * 100), 1, help=H("pf_weights"), key="pf_w_em")
         rebalance_freq = st.selectbox("Rebalansering", list(config.REBALANCE_OPTIONS.keys()), index=list(config.REBALANCE_OPTIONS.keys()).index(config.DEFAULT_REBALANCE), format_func=lambda k: config.REBALANCE_OPTIONS[k], help=H("pf_rebalance"), key="pf_rebalance_freq")
-        portfolio_initial_capital = st.number_input("Startkapital, KI-portfölj (kr)", 1000.0, 100_000_000.0, 100_000.0, 1000.0, help=H("pf_capital"), key="pf_portfolio_initial_capital")
+        portfolio_initial_capital = kr_input(st, "Startkapital, KI-portfölj (kr)", 100_000.0, "pf_portfolio_initial_capital", H("pf_capital"), min_value=1000.0)
         pf_cost_bps = st.number_input("Courtage/transaktionskostnad (bps)", 0.0, 500.0, config.DEFAULT_COST_BPS, 1.0, help=H("pf_costs"), key="pf_cost_bps")
         pf_slippage_bps = st.number_input("Slippage (bps)", 0.0, 500.0, config.DEFAULT_SLIPPAGE_BPS, 1.0, help=H("pf_costs"), key="pf_slippage_bps")
     with st.expander("Avriskning"):
@@ -264,11 +305,11 @@ with tab4:
             st.caption(f"Källa: {config.RIKSBANK_RATE_LABEL}, Riksbankens öppna API (gratis, ingen nyckel). Räntan som gällde föregående handelsdag används varje dag.")
         else:
             st.caption("Fast ränta eller nollränta under hela perioden.")
-    param_guide("ki_sell", "ki_buy", "ki_months", "ki_rule", "ki_floor", "ki_lag", "reentry_mode", "re_ki", "re_vix",
+    param_guide("pf_signal_source", "ki_sell", "ki_buy", "ki_months", "ki_rule", "ki_floor", "ki_lag", "reentry_mode", "re_ki", "re_vix",
                 "re_vix_threshold", "re_vix_calm", "re_credit", "re_credit_stress", "re_credit_sma", "re_rsi",
                 "re_rsi_threshold", "re_trend", "re_trend_mode", "re_time_stop", "re_staged", "pf_trend", "pf_weights",
                 "pf_rebalance", "pf_capital", "pf_costs", "pf_scope", "pf_derisk", "pf_interest", "pf_interest_deduction",
-                "pf_interest_floor", "pf_robust", "pf_sweden_long")
+                "pf_interest_floor", "pf_sweep_run", "pf_robust", "pf_sweden_long", "pf_us_long")
     weight_sum = w_global + w_sweden + w_em
     base_weights = {k: v for k, v in {"global": w_global/100, "sweden": w_sweden/100, "em": w_em/100}.items() if v > 0}
     risk_free_annual = annual_interest_rate if interest_mode == "fixed" else 0.0
@@ -283,9 +324,10 @@ with tab4:
         else:
             st.caption(f"KI styr köp och sälj · Trendfilter för återköp: {'portföljens SMA 200' if pf_trend else 'av'} · RSI, MACD och VIX påverkar inte KI.")
         st.markdown("**Modell som testas just nu**")
+        st.write(f"Signalkälla: {config.SIGNAL_SOURCES[pf_signal_source]}")
         st.write(f"KI sälj: >{pf_ki_sell_threshold} i {pf_ki_duration_months} månader · Köpgräns: <{pf_ki_buy_threshold} · Aktiveringsnivå/golv: <{pf_ki_effective_floor} · Återköp: {config.KI_BUYBACK_RULES[pf_ki_buyback_rule]}")
         st.write(f"Avriskning: {derisk_pct} % av {config.KI_SIGNAL_SCOPE_OPTIONS[ki_scope]} · Defensiv ränta: {interest_desc} · Portfölj: {w_global}/{w_sweden}/{w_em} · Rebalansering: {config.REBALANCE_OPTIONS[rebalance_freq]}")
-        st.write(f"Startkapital: {portfolio_initial_capital:,.0f} kr · Courtage: {pf_cost_bps/100:.2f} % · Slippage: {pf_slippage_bps/100:.2f} % · Handel: Close efter publiceringsfördröjning ({pf_pub_lag} dagar)")
+        st.write(f"Startkapital: {savings.format_amount(portfolio_initial_capital)} kr · Courtage: {pf_cost_bps/100:.2f} % · Slippage: {pf_slippage_bps/100:.2f} % · Handel: Close efter publiceringsfördröjning ({pf_pub_lag} dagar)")
 
 scope_key_map = {"all": {"global", "sweden", "em"}, "sweden_only": {"sweden"}, "sweden_em": {"sweden", "em"}}
 # ============================================================
@@ -560,9 +602,9 @@ if technical_available:
             st.markdown("#### Avkastning")
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("Totalavkastning (Strategi)", fmt_pct(strat_report.total_return_pct), delta=f"{strat_report.total_return_pct - bnh_report.total_return_pct:+.1f} procentenheter mot köp och behåll", help=config.EXPLANATIONS["total_return"])
-            m1.caption(f"Slutvärde: **${strat_report.final_value:,.0f}**")
+            m1.caption(f"Slutvärde: **{savings.format_amount(strat_report.final_value)} USD**")
             m2.metric("Totalavkastning (Buy & Hold)", fmt_pct(bnh_report.total_return_pct), delta="Referens", delta_color="off")
-            m2.caption(f"Slutvärde: **${bnh_report.final_value:,.0f}**")
+            m2.caption(f"Slutvärde: **{savings.format_amount(bnh_report.final_value)} USD**")
             m3.metric("CAGR (Strategi)", fmt_ratio(strat_report.cagr_pct) + " %/år", delta=fmt_pct(strat_report.cagr_pct - bnh_report.cagr_pct, 2), help=config.EXPLANATIONS["cagr"])
             m4.metric("CAGR (Buy & Hold)", fmt_ratio(bnh_report.cagr_pct) + " %/år", delta="Referens", delta_color="off")
 
@@ -618,14 +660,22 @@ with tab4:
 
         raw_prices = {k: fetch_price_series(sym) for k, sym in proxy_symbols.items()}
         fx = fetch_fx_rate()
+        if us_source:
+            _cli = fetch_us_cli()
+            signal_df = None if _cli is None else signal_sources.as_signal_frame(signal_sources.rescale_to_barometer(_cli))
+        else:
+            signal_df = df_ki
 
         missing = [k for k, v in raw_prices.items() if v is None or v.empty]
         if missing:
             st.error(f"❌ Kunde inte hämta data för: {', '.join(missing)}. KI-portföljbacktesten kan inte köras just nu.")
         elif fx is None or fx.empty:
             st.error("❌ Kunde inte hämta USD/SEK-växelkurs. KI-portföljbacktesten kan inte köras just nu.")
-        elif df_ki is None or df_ki.empty:
-            st.error("❌ KI-barometerdata saknas (se KI-modellen – Konjunktur). KI-portföljbacktesten kan inte köras just nu.")
+        elif signal_df is None or signal_df.empty:
+            if us_source:
+                st.error("❌ OECD:s ledande indikator för USA kunde inte hämtas från FRED just nu. Välj Sverige som signalkälla eller försök igen senare.")
+            else:
+                st.error("❌ KI-barometerdata saknas (se KI-modellen – Konjunktur). KI-portföljbacktesten kan inte köras just nu.")
         else:
             prices_sek = {k: portfolio.to_common_currency(v["Close"], fx) for k, v in raw_prices.items()}
             full_prices = portfolio.align_prices(prices_sek)
@@ -638,7 +688,10 @@ with tab4:
                 st.write(f"KI: senast hämtade historiska serie, som kan vara reviderad. Antagen tillgänglighet: månadsslut + {pf_pub_lag} kalenderdagar (KI publicerar normalt i slutet av samma månad); handel tidigast följande handelsdag. Detta är inte verifierade historiska publiceringsdatum och undanröjer inte effekten av reviderade värden.")
                 st.markdown("[KI: data uppdateras vid publicering](https://www.konj.se/statistik-och-data/) · [KI: indikatorer revideras varje månad](https://www.konj.se/publikationer/konjunkturbarometern/2026-09-29-kraftigt-forbattrat-stamningslage-hos-hushallen/)")
                 st.caption("Startallokering följer senast kända KI-/trendbeslut före perioden. Saknas tidigare beslut startar KI-portföljen fullt investerad. Teknisk strategi startar i kassa. Kassa i KI får vald schablonränta; historisk kortränta används inte.")
-            st.caption(f"Faktisk backteststart och slut: {prices_df.index.min().date()} till {prices_df.index.max().date()} · Basvaluta: {config.DEFAULT_BASE_CURRENCY}")
+            st.caption(f"Faktisk backteststart och slut: {prices_df.index.min().date()} till {prices_df.index.max().date()} · Basvaluta: {config.DEFAULT_BASE_CURRENCY}"
+                       + f" · Signalkälla: {config.SIGNAL_SOURCES[pf_signal_source]} (senaste månad {signal_df.index.max():%Y-%m})")
+            if us_source:
+                st.caption(f"Källa: {config.US_CLI_LABEL}. OECD-data är öppna (CC BY 4.0). Värdena är omräknade till KI-skala och kan vara reviderade i efterhand.")
 
             st.caption(f"Kostnad per omsatt aktievärde: courtage {pf_cost_bps:g} + slippage {pf_slippage_bps:g} bps, även initialköp och Buy & Hold-rebalansering. Riskfri ränta: {risk_free_annual:.1%}.")
 
@@ -647,7 +700,7 @@ with tab4:
                 duration_months=pf_ki_duration_months, floor_threshold=pf_ki_floor_threshold, buyback_rule=pf_ki_buyback_rule,
                 publication_lag_days=pf_pub_lag,
             )
-            ki_signals_monthly = ki_model.generate_ki_signals(df_ki["Barometer"], ki_params_sidebar)
+            ki_signals_monthly = ki_model.generate_ki_signals(signal_df["Barometer"], ki_params_sidebar)
             sweden_raw = raw_prices.get('sweden')
             if sweden_raw is None:
                 sweden_raw = fetch_price_series(config.SWEDEN_ORIGINAL_TICKER)
@@ -690,21 +743,12 @@ with tab4:
             engine_calendar = full_prices.index if sweden_reference is None else full_prices.index.union(sweden_reference.index)
             reentry_conditions = reentry.prepare_conditions(engine_calendar, reentry_params, reference=trend_reference,
                                                             vix=raw_vix, credit_ratio=credit_ratio) if combined else None
-            _sweden_conditions_cache = {}
-
-            def sweden_conditions():
-                """Samma villkor men med Sverigepriset som trendreferens (för Sverige-fördjupningen)."""
-                if "c" not in _sweden_conditions_cache:
-                    _sweden_conditions_cache["c"] = reentry.prepare_conditions(engine_calendar, reentry_params, reference=sweden_reference,
-                                                                               vix=raw_vix, credit_ratio=credit_ratio)
-                return _sweden_conditions_cache["c"]
-
-            def combined_run(kp, conditions=None):
-                return reentry.run_reentry_engine(df_ki["Barometer"], kp, engine_calendar,
+            def combined_run(kp, conditions=None, calendar=None):
+                return reentry.run_reentry_engine(signal_df["Barometer"], kp, engine_calendar if calendar is None else calendar,
                                                   reentry_conditions if conditions is None else conditions, reentry_params)
 
             def execution_for(monthly, use_filter=None, kp=None, calendar=None, period_index=None, ki_only=False,
-                              reference=None, conditions=None):
+                              reference=None, conditions=None, engine_cal=None):
                 """Ordrar för vald modell, mappade till kalendern och avgränsade till perioden.
 
                 reference/conditions: trendreferens (standard: portföljens eget index)."""
@@ -712,7 +756,7 @@ with tab4:
                 period_index = prices_df.index if period_index is None else period_index
                 reference = trend_reference if reference is None else reference
                 if combined and not ki_only:
-                    orders = reentry.map_orders_to_calendar(combined_run(kp or ki_params_sidebar, conditions)["orders"], calendar)
+                    orders = reentry.map_orders_to_calendar(combined_run(kp or ki_params_sidebar, conditions, engine_cal)["orders"], calendar)
                 else:
                     orders = ki_model.map_signals_to_trading_days(monthly, calendar)
                     if (pf_trend if use_filter is None else use_filter):
@@ -752,14 +796,14 @@ with tab4:
 
             st.markdown(f"#### Huvudjämförelse: {w_global}% Global / {w_sweden}% Sverige / {w_em}% Emerging Markets")
             value1, value2 = st.columns(2)
-            value1.metric("Slutvärde KI-strategi", f"{ki_report.final_value:,.0f} kr")
-            value2.metric("Slutvärde köp och behåll", f"{bnh_report.final_value:,.0f} kr")
+            value1.metric("Slutvärde KI-strategi", f"{savings.format_amount(ki_report.final_value)} kr")
+            value2.metric("Slutvärde köp och behåll", f"{savings.format_amount(bnh_report.final_value)} kr")
             st.caption(f"Avslutade sälj–återköpscykler: {research.completed_cycles(ki_res['events'])} · Längsta tid under tidigare topp: KI {research.longest_underwater_days(ki_res['equity'])} dagar / köp och behåll {research.longest_underwater_days(bnh_res['equity'])} dagar (kalenderdagar, även pågående nedgång). Startallokering räknas inte som en affärscykel.")
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("Totalavkastning (KI-strategi)", fmt_pct(ki_report.total_return_pct), delta=f"{ki_report.total_return_pct - bnh_report.total_return_pct:+.1f} procentenheter mot köp och behåll")
-            m1.caption(f"Slutvärde: **{ki_report.final_value:,.0f} kr**")
+            m1.caption(f"Slutvärde: **{savings.format_amount(ki_report.final_value)} kr**")
             m2.metric("Totalavkastning (Buy & Hold)", fmt_pct(bnh_report.total_return_pct), delta="Referens", delta_color="off")
-            m2.caption(f"Slutvärde: **{bnh_report.final_value:,.0f} kr**")
+            m2.caption(f"Slutvärde: **{savings.format_amount(bnh_report.final_value)} kr**")
             m3.metric("CAGR (KI-strategi)", fmt_ratio(ki_report.cagr_pct) + " %/år")
             m4.metric("CAGR (Buy & Hold)", fmt_ratio(bnh_report.cagr_pct) + " %/år")
 
@@ -793,7 +837,8 @@ with tab4:
                     st.caption("Inga omallokeringar efter startdagen under perioden.")
                 st.caption(f"Startläge: {ki_res['weights']['cash'].iloc[0]:.1%} räntekonto. Signalmånad och antaget publiceringsdatum visas separat från handelsdagen.")
 
-            fig_ind = charts.build_ki_indicator_chart(research.select_period(ki_signals_monthly, prices_df.index.min(), prices_df.index.max()), pf_ki_sell_threshold, pf_ki_buy_threshold, pf_ki_effective_floor)
+            fig_ind = charts.build_ki_indicator_chart(research.select_period(ki_signals_monthly, prices_df.index.min(), prices_df.index.max()), pf_ki_sell_threshold, pf_ki_buy_threshold, pf_ki_effective_floor,
+                                                      "OECD CLI USA (KI-skala)" if us_source else "Barometerindikator")
             st.plotly_chart(fig_ind, width="stretch")
             if combined:
                 st.caption("Grafen ovan visar KI:s egna månadssignaler enligt vald KI-regel. I kombinerat återköp kan återköpet ha skett tidigare (se markörerna i kapitalgrafen), och en ny försäljning kräver då att KI först varit nere på säljgränsen.")
@@ -827,10 +872,11 @@ with tab4:
 
             with st.expander("Fördjupning – avriskningsgrad × återköpsregel"):
                 st.caption("Historisk jämförelse - optimera INTE parametrarna mot denna tabell och förvänta dig samma resultat framåt.")
+                run_sweep = st.checkbox("Kör jämförelsen (tar några sekunder)", False, key="pf_sweep_run", help=H("pf_sweep_run"))
                 sweep_rows = []
-                for rule_key, rule_label in config.KI_BUYBACK_RULES.items():
+                for rule_key, rule_label in (config.KI_BUYBACK_RULES.items() if run_sweep else []):
                     rule_params = ki_model.KiParams(pf_ki_sell_threshold, pf_ki_buy_threshold, pf_ki_duration_months, pf_ki_floor_threshold, rule_key, publication_lag_days=pf_pub_lag)
-                    sig_monthly_rule = ki_model.generate_ki_signals(df_ki["Barometer"], rule_params)
+                    sig_monthly_rule = ki_model.generate_ki_signals(signal_df["Barometer"], rule_params)
                     exec_rule = execution_for(sig_monthly_rule, kp=rule_params)
                     for lvl in config.DERISK_LEVELS:
                         if lvl == 0:
@@ -846,11 +892,11 @@ with tab4:
                                 "Sharpe": fmt_ratio(metrics.sharpe_ratio(res["equity"], risk_free_annual=risk_free_annual)),
                                 "Sortino": fmt_ratio(metrics.sortino_ratio(res["equity"], risk_free_annual=risk_free_annual)),
                                 "Calmar": fmt_ratio(metrics.calmar_ratio(res["equity"])),
-                                "Slutvärde": f"{res['equity'].iloc[-1]:,.0f} kr",
+                                "Slutvärde": f"{savings.format_amount(res['equity'].iloc[-1])} kr",
                             }
                         )
-                sweep_df = pd.DataFrame(sweep_rows)
-                st.dataframe(sweep_df, width="stretch", hide_index=True)
+                if sweep_rows:
+                    st.dataframe(pd.DataFrame(sweep_rows), width="stretch", hide_index=True)
                 st.caption("Tabellen markerar avsiktligt INTE en enskild 'bästa' rad - jämför gärna både CAGR och de riskjusterade måtten (Sharpe/Sortino/Calmar).")
 
             with st.expander("Fördjupning – återköpsvarianter (enbart KI, trendfilter, kombinerat)"):
@@ -890,7 +936,7 @@ with tab4:
                     grid = [(t, m) for m in range(1, 5) for t in range(105, 119)]
                     for n_done, (t, m) in enumerate(grid, start=1):
                         kp = dataclasses.replace(ki_params_sidebar, sell_threshold=float(t), duration_months=m)
-                        monthly = None if combined else ki_model.generate_ki_signals(df_ki["Barometer"], kp)
+                        monthly = None if combined else ki_model.generate_ki_signals(signal_df["Barometer"], kp)
                         res = portfolio.simulate_portfolio(prices_df, execution_for(monthly, kp=kp), pf_params)
                         grid_rows.append({"Säljgräns": t, "Månader": m,
                                           "CAGR mot köp och behåll (pe)": metrics.cagr(res["equity"]) - bnh_cagr,
@@ -905,39 +951,51 @@ with tab4:
                     st.caption("pe = procentenheter jämfört med köp och behåll. Svart ram = dina nuvarande inställningar (om de ligger inom rutnätet). Positiva tal är bättre än köp och behåll. "
                                "Få konjunkturcykler betyder att en enda försäljning kan avgöra en hel ruta.")
 
-            with st.expander("Fördjupning – Sverige med längsta historik"):
-                st.caption("Samma KI-modell och återköp, men enbart Sverige (EWD i SEK) så långt tillbaka som kurs- och valutadata räcker. "
-                           "Ger fler konjunkturcykler än huvudtestet, som begränsas av Global-proxyns start.")
-                if st.checkbox("Kör Sverige med längsta historik", False, key="pf_sweden_long", help=H("pf_sweden_long")):
-                    if sweden_reference is None or sweden_reference.empty:
-                        st.info("Sverigedata saknas.")
-                    else:
-                        long_prices = research.select_period(sweden_reference.to_frame("sweden"), period_start, period_end)
-                        if len(long_prices) < 2:
-                            st.info("För lite Sverigedata under vald period.")
-                        else:
-                            long_orders = execution_for(ki_signals_monthly, calendar=sweden_reference.index, period_index=long_prices.index,
-                                                        reference=sweden_reference, conditions=sweden_conditions() if combined else None)
-                            long_params = dataclasses.replace(pf_params, base_weights={"sweden": 1.0}, scope_keys={"sweden"})
-                            long_ki = portfolio.simulate_portfolio(long_prices, long_orders, long_params)
-                            long_bnh = portfolio.simulate_portfolio(long_prices, None, dataclasses.replace(long_params, apply_ki=False))
-                            st.caption(f"Period: {long_prices.index.min().date()} till {long_prices.index.max().date()} · Avslutade cykler: {research.completed_cycles(long_ki['events'])}")
-                            l1, l2, l3, l4 = st.columns(4)
-                            l1.metric("CAGR KI Sverige (lång)", fmt_ratio(metrics.cagr(long_ki['equity'])) + " %/år")
-                            l2.metric("CAGR köp och behåll (lång)", fmt_ratio(metrics.cagr(long_bnh['equity'])) + " %/år")
-                            l3.metric("Största nedgång KI (lång)", fmt_ratio(metrics.max_drawdown(long_ki['equity'])) + " %")
-                            l4.metric("Största nedgång köp och behåll (lång)", fmt_ratio(metrics.max_drawdown(long_bnh['equity'])) + " %")
-                            lfig = charts.build_equity_drawdown_chart(long_ki["equity"], long_bnh["equity"],
-                                                                      metrics.compute_drawdown(long_ki["equity"].to_numpy(), portfolio_initial_capital),
-                                                                      metrics.compute_drawdown(long_bnh["equity"].to_numpy(), portfolio_initial_capital), "KI Sverige")
-                            charts.add_transactions(lfig, long_ki["equity"], charts.portfolio_events(long_ki["events"]), long_ki["risk_multiplier"], marker_text)
-                            if main_run is not None and reentry_params.time_stop_months > 0:
-                                charts.add_time_stop_lines(lfig, [c["time_stop_date"] for c in main_run["cycles"]],
-                                                           long_ki["equity"].index[0], long_ki["equity"].index[-1])
-                            st.plotly_chart(lfig, width="stretch")
-                            sell_tbl = research.sell_event_table(long_ki["events"], long_bnh["equity"])
-                            if not sell_tbl.empty:
-                                st.dataframe(sell_tbl.round(1), width="stretch", hide_index=True)
+            def long_history_view(label, column, help_key, checkbox_key, load_reference, chart_name):
+                """Samma modell och återköp på en enda tillgång (i SEK) så långt tillbaka som data räcker."""
+                with st.expander(f"Fördjupning – {label} med längsta historik"):
+                    st.caption(f"Samma signal och återköp, men enbart {label} i SEK så långt tillbaka som kurs- och valutadata räcker. "
+                               "Ger fler konjunkturcykler än huvudtestet, som begränsas av Global-proxyns start. "
+                               "Trend- och RSI-villkoren räknas här på just den tillgången.")
+                    if not st.checkbox(f"Kör {label} med längsta historik", False, key=checkbox_key, help=H(help_key)):
+                        return
+                    ref = load_reference()
+                    if ref is None or ref.empty:
+                        st.info(f"Kursdata för {label} saknas just nu.")
+                        return
+                    long_prices = research.select_period(ref.to_frame(column), period_start, period_end)
+                    if len(long_prices) < 2:
+                        st.info(f"För lite data för {label} under vald period.")
+                        return
+                    long_cal = engine_calendar.union(ref.index)
+                    long_cond = (reentry.prepare_conditions(long_cal, reentry_params, reference=ref, vix=raw_vix, credit_ratio=credit_ratio)
+                                 if combined else None)
+                    long_orders = execution_for(ki_signals_monthly, calendar=ref.index, period_index=long_prices.index,
+                                                reference=ref, conditions=long_cond, engine_cal=long_cal if combined else None)
+                    long_params = dataclasses.replace(pf_params, base_weights={column: 1.0}, scope_keys={column})
+                    long_ki = portfolio.simulate_portfolio(long_prices, long_orders, long_params)
+                    long_bnh = portfolio.simulate_portfolio(long_prices, None, dataclasses.replace(long_params, apply_ki=False))
+                    st.caption(f"Period: {long_prices.index.min().date()} till {long_prices.index.max().date()} · Avslutade cykler: {research.completed_cycles(long_ki['events'])}")
+                    l1, l2, l3, l4 = st.columns(4)
+                    l1.metric(f"CAGR KI {label} (lång)", fmt_ratio(metrics.cagr(long_ki['equity'])) + " %/år")
+                    l2.metric(f"CAGR köp och behåll {label} (lång)", fmt_ratio(metrics.cagr(long_bnh['equity'])) + " %/år")
+                    l3.metric(f"Största nedgång KI {label} (lång)", fmt_ratio(metrics.max_drawdown(long_ki['equity'])) + " %")
+                    l4.metric(f"Största nedgång köp och behåll {label} (lång)", fmt_ratio(metrics.max_drawdown(long_bnh['equity'])) + " %")
+                    lfig = charts.build_equity_drawdown_chart(long_ki["equity"], long_bnh["equity"],
+                                                              metrics.compute_drawdown(long_ki["equity"].to_numpy(), portfolio_initial_capital),
+                                                              metrics.compute_drawdown(long_bnh["equity"].to_numpy(), portfolio_initial_capital), chart_name)
+                    charts.add_transactions(lfig, long_ki["equity"], charts.portfolio_events(long_ki["events"]), long_ki["risk_multiplier"], marker_text)
+                    st.plotly_chart(lfig, width="stretch")
+                    sell_tbl = research.sell_event_table(long_ki["events"], long_bnh["equity"])
+                    if not sell_tbl.empty:
+                        st.dataframe(sell_tbl.round(1), width="stretch", hide_index=True)
+
+            def load_us_reference():
+                spy = fetch_price_series(config.US_PRICE_TICKER)
+                return None if spy is None or spy.empty else portfolio.to_common_currency(spy["Close"], fx).dropna()
+
+            long_history_view("Sverige", "sweden", "pf_sweden_long", "pf_sweden_long", lambda: sweden_reference, "KI Sverige")
+            long_history_view("USA", "usa", "pf_us_long", "pf_us_long", load_us_reference, "KI USA")
 
             st.markdown("---")
             if w_sweden != 100:
@@ -962,33 +1020,37 @@ with tab4:
 # FLIK 5: MÅNADSSPARANDE
 # ------------------------------------------------------------
 def fmt_kr(x: float) -> str:
-    return "N/A" if x is None or not np.isfinite(x) else f"{x:,.0f} kr".replace(",", " ")
+    return "N/A" if x is None or not np.isfinite(x) else f"{savings.format_amount(x)} kr".replace(",", " ")
 
 
 def fmt_pp(x: float, decimals: int = 2) -> str:
     return "N/A" if x is None or not np.isfinite(x) else f"{x:.{decimals}f} %"
 
 
-with tab5:
+@st.fragment
+def savings_tab():
+    """Fliken körs som ett fragment: ändringar här räknar bara om sparplanen, inte resten av appen."""
     st.subheader("💰 Månadssparande – vad hade hänt med din sparplan?")
     st.markdown(
         "Testa ett månadssparande med årlig höjning, ett startbelopp och valfritt antal större insättningar (bonus, arv, försäljning …). "
-        "Samma insättningar körs i **köp och behåll** och i **KI-strategin**. Portfölj, KI-regler, avriskning, "
+        "Samma insättningar körs i **köp och behåll** och i **KI-strategin**. Portfölj, signalkälla, KI-regler, avriskning, "
         "räntekonto och kostnader hämtas från fliken **KI-modellen – Portföljbacktest**. "
         "Testperioden överst gäller inte här – välj start och slut för sparandet nedan."
     )
     st.button("Återställ standard – Månadssparande", key="reset_sv", on_click=reset_model, args=("sv_",))
-    with st.expander("Sparplan", expanded=True):
+    # Formulär: inget räknas om medan du fyller i datum och belopp – först när du trycker på knappen.
+    with st.form("sv_form"):
+        st.markdown("**Sparplan**")
         c1, c2 = st.columns(2)
         sv_start = c1.date_input("Började spara", date(2007, 1, 1), min_value=date(1990, 1, 1), max_value=date(2100, 12, 31), key="sv_start", help=H("sv_period"))
         sv_end = c2.date_input("Slutdatum", date.today(), min_value=date(1990, 1, 1), max_value=date(2100, 12, 31), key="sv_end", help=H("sv_period"))
         c3, c4 = st.columns(2)
-        sv_initial = c3.number_input("Startbelopp (kr)", 0.0, 100_000_000.0, 0.0, 1000.0, format="%.0f", key="sv_initial", help=H("sv_initial"))
-        sv_monthly = c4.number_input("Månadsbelopp (kr)", 0.0, 1_000_000.0, 2000.0, 100.0, format="%.0f", key="sv_monthly", help=H("sv_monthly"))
+        sv_initial = kr_input(c3, "Startbelopp (kr)", 0.0, "sv_initial", H("sv_initial"), max_value=1e9, reformat_on_change=False)
+        sv_monthly = kr_input(c4, "Månadsbelopp (kr)", 2000.0, "sv_monthly", H("sv_monthly"), max_value=1e7, reformat_on_change=False)
         c5, c6 = st.columns(2)
         sv_growth = c5.number_input("Årlig ökning av månadsbeloppet (%)", 0.0, 20.0, 3.0, 0.5, format="%.1f", key="sv_growth", help=H("sv_growth"))
         sv_day = int(c6.number_input("Insättningsdag i månaden", 1, 28, 25, 1, key="sv_day", help=H("sv_day")))
-    with st.expander("Extra insättningar (bonus, arv, försäljning …)", expanded=True):
+        st.markdown("**Extra insättningar (bonus, arv, försäljning …)**")
         st.caption("Lägg till så många insättningar du vill: klicka på den tomma raden längst ner i tabellen "
                    "(eller **+** i tabellens verktygsrad uppe till höger). Dubbelklicka på en cell för att ändra den. "
                    "Ta bort en rad genom att markera rutan längst till vänster och klicka på papperskorgen.")
@@ -999,18 +1061,19 @@ with tab5:
             st.session_state["sv_extra_data"], num_rows="dynamic", key="sv_extra_table", width="stretch", hide_index=True,
             column_config={
                 "Datum": st.column_config.DateColumn("Datum", format="YYYY-MM-DD", min_value=date(1990, 1, 1), max_value=date(2100, 12, 31)),
-                "Belopp (kr)": st.column_config.NumberColumn("Belopp (kr)", min_value=0, step=1000, format="%.0f"),
+                "Belopp (kr)": st.column_config.NumberColumn("Belopp (kr)", min_value=0, step=1000, format="localized"),
                 "Beskrivning": st.column_config.TextColumn("Beskrivning (valfritt)", max_chars=60),
             })
-        sv_extra_rows, sv_extra_incomplete = savings.parse_extra_deposits(extra_table)
-        sv_extras = [(n, d, a) for n, d, a, _ in sv_extra_rows]
-        sv_extra_label = {n: lbl for n, _, _, lbl in sv_extra_rows}
-        if sv_extra_incomplete:
-            st.warning(f"{sv_extra_incomplete} rad(er) saknar datum eller belopp över 0 kr och räknas inte.")
-        if sv_extra_rows:
-            extra_total = f"{sum(a for _, _, a, _ in sv_extra_rows):,.0f}".replace(",", " ")
-            st.caption(f"{len(sv_extra_rows)} extra insättningar, totalt {extra_total} kr.")
-        st.caption("Tips: lägg en insättning strax före en topp (t.ex. hösten 2007 eller december 2021) och en strax efter ett ras för att se skillnaden.")
+        st.form_submit_button("Beräkna sparplanen", type="primary", on_click=normalize_amount_keys, args=("sv_initial", "sv_monthly"))
+        st.caption("Ändringar räknas först när du trycker på **Beräkna sparplanen**. "
+                   "Tips: lägg en insättning strax före en topp (t.ex. hösten 2007 eller december 2021) och en strax efter ett ras.")
+    sv_extra_rows, sv_extra_incomplete = savings.parse_extra_deposits(extra_table)
+    sv_extras = [(n, d, a) for n, d, a, _ in sv_extra_rows]
+    sv_extra_label = {n: lbl for n, _, _, lbl in sv_extra_rows}
+    if sv_extra_incomplete:
+        st.warning(f"{sv_extra_incomplete} rad(er) saknar datum eller belopp över 0 kr och räknas inte.")
+    if sv_extra_rows:
+        st.caption(f"{len(sv_extra_rows)} extra insättningar, totalt {savings.format_amount(sum(a for _, _, a, _ in sv_extra_rows))} kr.")
     param_guide("sv_period", "sv_initial", "sv_monthly", "sv_day", "sv_growth", "sv_extra", "sv_compare")
 
     if savings_ctx is None:
@@ -1090,10 +1153,10 @@ with tab5:
                     g = yr.groupby(yr.index.year)
                     year_tbl = pd.DataFrame({
                         "År": g.size().index.astype(str),
-                        "Insatt under året (kr)": g["Insatt under året"].sum().round(0).to_numpy(),
-                        "Insatt totalt (kr)": g["Insatt under året"].sum().cumsum().round(0).to_numpy(),
-                        "Värde köp och behåll vid årsslut (kr)": g["Värde köp och behåll"].last().round(0).to_numpy(),
-                        "Värde KI vid årsslut (kr)": g["Värde KI"].last().round(0).to_numpy(),
+                        "Insatt under året (kr)": [savings.format_amount(v) for v in g["Insatt under året"].sum()],
+                        "Insatt totalt (kr)": [savings.format_amount(v) for v in g["Insatt under året"].sum().cumsum()],
+                        "Värde köp och behåll vid årsslut (kr)": [savings.format_amount(v) for v in g["Värde köp och behåll"].last()],
+                        "Värde KI vid årsslut (kr)": [savings.format_amount(v) for v in g["Värde KI"].last()],
                     })
                     twr_last = yr[["twr_bnh", "twr_ki"]].groupby(yr.index.year).last()
                     twr_prev = twr_last.shift(1)
@@ -1133,9 +1196,9 @@ with tab5:
                             yorders = savings_ctx["execution_for"](savings_ctx["ki_signals_monthly"], period_index=yp.index)
                             yres = savings.run_plan(yp, yorders, sv_params, yflows)
                             rows.append({"Startår": str(y),
-                                         "Insatt (kr)": round(yres["bnh_summary"]["invested"]),
-                                         "Slutvärde köp och behåll (kr)": round(yres["bnh_summary"]["final_value"]),
-                                         "Slutvärde KI (kr)": round(yres["ki_summary"]["final_value"]),
+                                         "Insatt (kr)": savings.format_amount(yres["bnh_summary"]["invested"]),
+                                         "Slutvärde köp och behåll (kr)": savings.format_amount(yres["bnh_summary"]["final_value"]),
+                                         "Slutvärde KI (kr)": savings.format_amount(yres["ki_summary"]["final_value"]),
                                          "Köp och behåll (%/år)": round(yres["bnh_summary"]["xirr_pct"], 2),
                                          "KI-strategi (%/år)": round(yres["ki_summary"]["xirr_pct"], 2)})
                             prog.progress(n_done / max(len(years), 1))
@@ -1147,6 +1210,12 @@ with tab5:
                             st.caption("%/år = pengaviktad årsavkastning på insättningarna (XIRR). Sena startår har kort sparperiod och påverkas mest av de senaste årens börs.")
                         else:
                             st.info("För kort historik för att jämföra startår.")
+
+
+
+
+with tab5:
+    savings_tab()
 
 
 # ------------------------------------------------------------

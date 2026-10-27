@@ -123,6 +123,26 @@ RIKSBANK_RATE_LABEL = "Statsskuldväxel 3 mån (Riksbanken, SETB3MBENCH)"
 KI_PUBLICATION_LAG_DAYS = 0
 
 # ------------------------------------------------------------
+# Signalkälla för KI-portföljbacktestet
+# ------------------------------------------------------------
+SIGNAL_SOURCES = {
+    "ki": "Sverige – KI Barometerindikator",
+    "us_cli": "USA – OECD ledande indikator (CLI)",
+}
+DEFAULT_SIGNAL_SOURCE = "ki"
+# OECD Composite Leading Indicator för USA, amplitudjusterad (normal = 100), månadsdata från 1955.
+# Hämtas gratis som CSV från FRED (ingen nyckel). OECD-data är öppna (CC BY 4.0) – ange källan.
+US_CLI_SERIES = "USALOLITOAASTSAM"
+FRED_CSV_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id={series}"
+US_CLI_LABEL = "OECD Composite Leading Indicator, USA (via FRED, USALOLITOAASTSAM)"
+# OECD publicerar CLI ungefär i mitten av månaden efter (t.ex. septembervärdet 15 oktober).
+DEFAULT_US_CLI_LAG_DAYS = 15
+# CLI svänger bara några enheter runt 100. Den räknas om till KI:s skala (100 + 10 × standardavvikelser)
+# med en växande standardavvikelse som bara använder historik fram till varje månad.
+US_CLI_MIN_HISTORY_MONTHS = 120
+US_PRICE_TICKER = "SPY"  # S&P 500-fond, för USA med längsta historik
+
+# ------------------------------------------------------------
 # Pedagogiska förklaringar (används som help= och i expanders)
 # ------------------------------------------------------------
 EXPLANATIONS = {
@@ -281,7 +301,19 @@ PARAM_HELP = {
     "ki_lag": ("Publiceringsfördröjning (dagar)",
         "Hur många dagar efter månadsslut KI-värdet antas bli känt för handel.",
         "KI publicerar i slutet av SAMMA månad (t.ex. majsiffran 28 maj), så 0 dagar (standard) betyder handel första "
-        "handelsdagen i nästa månad – några dagar efter publiceringen. 20 dagar är ett mycket försiktigt antagande. Jämför för att se hur känslig modellen är."),
+        "handelsdagen i nästa månad – några dagar efter publiceringen. 20 dagar är ett mycket försiktigt antagande. "
+        "För USA (OECD CLI) är standard 15 dagar, eftersom OECD publicerar ungefär i mitten av månaden efter."),
+    "pf_signal_source": ("Signalkälla",
+        "Vilken konjunkturindikator som styr sälj och återköp. Sverige = KI:s Barometerindikator. USA = OECD:s ledande "
+        "indikator (CLI), omräknad till samma skala som KI: 100 = normalt, 110 = 1 standardavvikelse över normalt.",
+        "Din Global-portfölj är till största delen USA, så en amerikansk indikator kan passa den bättre. CLI revideras mycket i "
+        "efterhand, så backtestet blir något bättre än verkligheten. Testa gärna båda och jämför i robusthetstestet."),
+    "pf_us_long": ("USA med längsta historik",
+        "Kör samma modell enbart på amerikanska aktier (S&P 500-fonden SPY i SEK) så långt bak som kurs- och valutadata räcker.",
+        "Ger fler konjunkturcykler än huvudtestet, som begränsas av Global-proxyns start 2012."),
+    "pf_sweep_run": ("Avriskningsgrad × återköpsregel",
+        "Kör backtestet för alla återköpsregler och avriskningsgrader med dina övriga inställningar.",
+        "Tar några sekunder och körs därför bara när rutan är ikryssad."),
     "ki_overlay_vix": ("Visa VIX-panik i KI-grafen",
         "Ritar en markör första dagen i varje period då VIX är över tröskeln.",
         "Bara visning – för att faktiskt testa VIX som återköp väljer du det i Portföljbacktestet."),

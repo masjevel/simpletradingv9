@@ -102,6 +102,7 @@ def offline_app(monkeypatch):
     fake.fetch_vix = lambda: pd.Series(35., index=dates, name='VIX')
     fake.fetch_fx_rate = lambda: pd.Series(10., index=dates)
     fake.fetch_riksbank_rate = lambda *a, **k: pd.Series(0.01, index=pd.date_range('1995-01-02', '2030-12-31', freq='B'))
+    fake.fetch_us_cli = lambda *a, **k: None
     fake.fetch_ki_barometer = lambda: pd.DataFrame({'Barometer': [115., 115., 115., 89., 91., 95., 100., 105., 110., 115., 89., 92.] * 3}, index=pd.date_range('2018-01-31', periods=36, freq='ME'))
     monkeypatch.setitem(sys.modules, 'data', fake)
     return fake, AppTest.from_file(str(Path(__file__).with_name('app.py')), default_timeout=60).run()

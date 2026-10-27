@@ -1,5 +1,27 @@
 # Genomförda ändringar och kvalitetskontroll
 
+## 26 oktober 2026 (kväll) – USA som signalkälla, snabbare sparflik och belopp med mellanslag
+
+- **Signalkälla USA – OECD CLI** (`signal_sources.py`, `data.fetch_us_cli`): OECD:s ledande indikator för USA
+  (USALOLITOAASTSAM, månadsdata från 1955) hämtas gratis som CSV från FRED. Den räknas om till KI:s skala
+  (100 + 10 × standardavvikelser kring 100) med växande fönster, så ingen framtida data används. Väljs under
+  Portföljbacktest → KI-signal och gäller hela portföljbacktestet och Månadssparande. Egen publiceringsfördröjning
+  (standard 15 dagar). Felmeddelande om FRED inte svarar.
+- **USA med längsta historik**: ny fördjupning med S&P 500-fonden SPY i SEK. Sverige- och USA-vyerna delar samma kod och
+  räknar trend/RSI på respektive tillgång.
+- **Månadssparande snabbare och stabilare**: fliken körs som ett Streamlit-fragment (ändringar räknar bara om sparplanen)
+  och sparplanen ligger i ett formulär med knappen **Beräkna sparplanen**. Inget räknas om medan datum, belopp och
+  tabellrader fylls i. Omräkning tar ungefär en halv sekund med testdata (tidigare hela appen, cirka 3 sekunder).
+- **Avriskningsgrad × återköpsregel** körs bara när rutan kryssas i (20 extra simuleringar vid varje klick tidigare).
+- **Belopp med mellanslag**: beloppsfält (startbelopp, månadsbelopp, startkapital) visar och tolkar 10 000, 10000,
+  10 000 kr och 10.000. Tabellen med extra insättningar visar belopp enligt webbläsarens språk (svenska: 10 000). Alla
+  kronbelopp i texter och tabeller och siffrorna i graferna använder mellanslag.
+- Nya tester: tolkning/formatering av belopp, FRED-CSV, omskalning utan look-ahead, USA-källa i UI, formuläret och att
+  avriskningstabellen bara körs på begäran.
+
+Verifiering: 165 tester passerar. Granskat i webbläsare (1400 px och 390 px, svensk språkinställning) med syntetiska data.
+FRED och Riksbanken kunde inte anropas från testmiljön.
+
 ## 26 oktober 2026 – Månadssparande, historisk ränta och portföljens egen trend
 
 - **Ny flik 💰 Månadssparande** (`savings.py`, `app.py`): startdatum, startbelopp, månadsbelopp med årlig ökning,

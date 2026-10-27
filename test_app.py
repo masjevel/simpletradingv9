@@ -21,6 +21,7 @@ def test_ui_history_and_reports_offline(monkeypatch, fx_case):
     fx_dates=dates[3:] if fx_case=='normal' else pd.to_datetime(['2030-01-01'])
     fake.fetch_fx_rate=lambda:pd.Series(10.,index=fx_dates)
     fake.fetch_riksbank_rate = lambda *a, **k: pd.Series(0.01, index=pd.date_range('1995-01-02', '2030-12-31', freq='B'))
+    fake.fetch_us_cli = lambda *a, **k: None
     monkeypatch.setitem(sys.modules,'data',fake)
     app=AppTest.from_file(str(Path(__file__).with_name('app.py')),default_timeout=30).run()
     assert not app.exception
@@ -81,6 +82,7 @@ def test_signal_controls_reach_computation(monkeypatch):
     fake.fetch_ki_barometer = lambda: pd.DataFrame({'Barometer':[115.,115.,115.,80.,80.,80.,95.,98.,100.,105.,110.,115.]},index=pd.date_range('2019-01-31',periods=12,freq='ME'))
     fake.fetch_fx_rate = lambda: pd.Series(10.,index=dates)
     fake.fetch_riksbank_rate = lambda *a, **k: pd.Series(0.01, index=pd.date_range('1995-01-02', '2030-12-31', freq='B'))
+    fake.fetch_us_cli = lambda *a, **k: None
     monkeypatch.setitem(sys.modules,'data',fake)
     seen={}
     original=signals.generate_signals
@@ -131,6 +133,7 @@ def test_flat_or_up_available_and_independent_in_both_ki_tabs(monkeypatch):
     fake.fetch_ki_barometer = lambda: pd.DataFrame({'Barometer': [114., 114., 114., 89., 91., 95.]}, index=pd.date_range('2020-01-31', periods=6, freq='ME'))
     fake.fetch_fx_rate = lambda: pd.Series(10., index=dates)
     fake.fetch_riksbank_rate = lambda *a, **k: pd.Series(0.01, index=pd.date_range('1995-01-02', '2030-12-31', freq='B'))
+    fake.fetch_us_cli = lambda *a, **k: None
     monkeypatch.setitem(sys.modules, 'data', fake)
     calls = []
     original = ki_model.generate_ki_signals

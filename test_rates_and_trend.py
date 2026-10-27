@@ -113,3 +113,47 @@ def test_default_publication_lag_is_zero_and_trades_next_month():
     sig = ki_model.generate_ki_signals(ki, ki_model.KiParams(110, 90, 3, 90, "classic"))
     orders = ki_model.map_signals_to_trading_days(sig, pd.bdate_range("2024-03-01", "2024-04-30"))
     assert list(orders.index) == [pd.Timestamp("2024-04-01")]  # marssiffran -> första handelsdagen i april
+
+
+
+def test_parse_fred_csv_month_end_and_missing():
+    text = "observation_date,USALOLITOAASTSAM\n2026-07-01,100.86915\n2026-08-01,.\n2026-09-01,100.99928\n"
+    s = data.parse_fred_csv(text)
+    assert list(s.index) == [pd.Timestamp("2026-07-31"), pd.Timestamp("2026-09-30")]
+    assert s.iloc[-1] == pytest.approx(100.99928)
+    old_header = "DATE,X\n2020-01-01,99.5\n"
+    assert data.parse_fred_csv(old_header).iloc[0] == pytest.approx(99.5)
+
+
+def test_fetch_us_cli_url(monkeypatch):
+    seen = []
+
+    class Resp:
+        status_code = 200
+        text = "observation_date,USALOLITOAASTSAM\n2026-09-01,101.0\n"
+
+    monkeypatch.setattr(data.requests, "get", lambda url, **kw: (seen.append(url), Resp())[1])
+    _clear(data.fetch_us_cli)
+    s = data.fetch_us_cli()
+    assert seen[0] == f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={config.US_CLI_SERIES}"
+    assert s.iloc[0] == pytest.approx(101.0) and s.name == "CLI"
+    monkeypatch.setattr(data.requests, "get", lambda url, **kw: type("R", (), {"status_code": 503, "text": ""})())
+    _clear(data.fetch_us_cli)
+    assert data.fetch_us_cli() is None
+    _clear(data.fetch_us_cli)
+
+
+def test_rescale_cli_scale_and_no_lookahead():
+    import signal_sources
+    months = pd.date_range("1960-01-31", periods=400, freq="ME")
+    rng = np.random.default_rng(1)
+    cli = pd.Series(100 + rng.normal(0, 1.2, len(months)), index=months)
+    scaled = signal_sources.rescale_to_barometer(cli, min_months=120)
+    assert scaled.iloc[:119].isna().all() and scaled.iloc[119:].notna().all()
+    # Långt fram är skalan ungefär KI:s: standardavvikelse ~10 kring 100.
+    assert (scaled.iloc[200:] - 100).pow(2).mean() ** 0.5 == pytest.approx(10, rel=0.15)
+    # Ingen look-ahead: ändrade framtida värden påverkar inte tidigare skalade värden.
+    changed = cli.copy(); changed.iloc[300:] += 5
+    pd.testing.assert_series_equal(scaled.iloc[:300], signal_sources.rescale_to_barometer(changed, 120).iloc[:300])
+    frame = signal_sources.as_signal_frame(scaled)
+    assert list(frame.columns) == ["Barometer"] and frame["Barometer"].notna().all()

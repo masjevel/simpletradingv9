@@ -19,6 +19,7 @@ COMMON_LAYOUT = dict(
     paper_bgcolor="rgba(0,0,0,0)",
     plot_bgcolor="rgba(0,0,0,0)",
     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+    separators=", ",  # svensk stil: decimalkomma och mellanslag som tusentalsavgränsare (10 000)
 )
 GRID = dict(showgrid=True, gridcolor="rgba(128,128,128,0.2)")
 
@@ -143,9 +144,10 @@ def build_allocation_chart(weights_df: pd.DataFrame, label_map: dict) -> go.Figu
     return fig
 
 
-def build_ki_indicator_chart(ki_signals: pd.DataFrame, sell_threshold: float, buy_threshold: float, floor_threshold: float) -> go.Figure:
+def build_ki_indicator_chart(ki_signals: pd.DataFrame, sell_threshold: float, buy_threshold: float, floor_threshold: float,
+                             y_title: str = "Barometerindikator") -> go.Figure:
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=ki_signals.index, y=ki_signals["Barometer"], mode="lines", name="Barometerindikator", line=dict(color="#3498db", width=2)))
+    fig.add_trace(go.Scatter(x=ki_signals.index, y=ki_signals["Barometer"], mode="lines", name=y_title, line=dict(color="#3498db", width=2)))
     fig.add_hline(y=sell_threshold, line_dash="dash", line_color="rgba(231,76,60,0.8)", annotation_text=f"Säljgräns ({sell_threshold})")
     fig.add_hline(y=buy_threshold, line_dash="dash", line_color="rgba(46,204,113,0.8)", annotation_text=f"Köpgräns ({buy_threshold})")
     fig.add_hline(y=floor_threshold, line_dash="dot", line_color="rgba(149,165,166,0.6)", annotation_text=f"Golv för återköp ({floor_threshold})")
@@ -155,7 +157,7 @@ def build_ki_indicator_chart(ki_signals: pd.DataFrame, sell_threshold: float, bu
     fig.add_trace(go.Scatter(x=sells.index, y=sells["Barometer"], mode="markers", name="▼ KI AVRISKNING", marker=dict(symbol="triangle-down", color="#e74c3c", size=13, line=dict(color="black", width=1))))
     fig.add_trace(go.Scatter(x=buys.index, y=buys["Barometer"], mode="markers", name="▲ KI ÅTERKÖP", marker=dict(symbol="triangle-up", color="#2ecc71", size=13, line=dict(color="black", width=1))))
 
-    fig.update_layout(yaxis_title="Barometerindikator", **COMMON_LAYOUT)
+    fig.update_layout(yaxis_title=y_title, **COMMON_LAYOUT)
     fig.update_xaxes(**GRID)
     fig.update_yaxes(**GRID)
     return fig
@@ -344,7 +346,7 @@ def build_savings_chart(ki_equity: pd.Series, bnh_equity: pd.Series, invested: p
                                  text=[f"+{v:,.0f}".replace(",", " ") for v in extra_deposits.values], textposition="top center",
                                  customdata=extra_labels if extra_labels is not None else [""] * len(extra_deposits),
                                  hovertemplate="Extra insättning %{text} kr %{customdata}<extra></extra>"))
-    fig.update_layout(yaxis_title="Värde (kr)", separators=", ", **COMMON_LAYOUT)
+    fig.update_layout(yaxis_title="Värde (kr)", **COMMON_LAYOUT)
     fig.update_xaxes(**GRID)
     fig.update_yaxes(tickformat=",.0f", **GRID)
     return fig

@@ -23,7 +23,7 @@ import pandas as pd
 import requests
 import yfinance as yf
 
-from config import FX_TICKER, RIKSBANK_API_BASE, RIKSBANK_RATE_SERIES
+from config import FRED_CSV_URL, FX_TICKER, RIKSBANK_API_BASE, RIKSBANK_RATE_SERIES, US_CLI_SERIES
 
 logger = logging.getLogger("simpletradingv3.data")
 logging.basicConfig(level=logging.INFO)
@@ -270,3 +270,38 @@ def fetch_riksbank_rate(series_id: str = RIKSBANK_RATE_SERIES, start: str = "199
         logger.warning("Riksbankens API gav inga observationer för %s", series_id)
         return None
     return series
+
+
+def parse_fred_csv(text: str) -> pd.Series:
+    """Tolkar FRED:s CSV (datum, värde). '.' betyder saknat värde. Månadsdatum flyttas till månadens sista dag,
+    samma tidsstämpel som KI-serien, så att publiceringsfördröjningen räknas från månadsslut."""
+    import io
+    df = pd.read_csv(io.StringIO(text))
+    if df.shape[1] < 2:
+        return pd.Series(dtype=float, name="Value")
+    dates = pd.to_datetime(df.iloc[:, 0], errors="coerce")
+    values = pd.to_numeric(df.iloc[:, 1], errors="coerce")
+    s = pd.Series(values.to_numpy(), index=dates, name="Value").dropna()
+    s = s[s.index.notna()]
+    s.index = pd.DatetimeIndex([pd.Period(d, freq="M").end_time.normalize() for d in s.index])
+    return s[~s.index.duplicated(keep="last")].sort_index()
+
+
+@_cache_data(ttl=86400, show_spinner="Hämtar OECD:s ledande indikator för USA...")
+def fetch_us_cli(series_id: str = US_CLI_SERIES) -> pd.Series | None:
+    """OECD Composite Leading Indicator för USA från FRED (gratis CSV, ingen nyckel). None vid fel."""
+    url = FRED_CSV_URL.format(series=series_id)
+    try:
+        resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0", "Accept": "text/csv"}, timeout=20)
+    except Exception:
+        logger.warning("FRED kunde inte nås (%s).", url, exc_info=True)
+        return None
+    if resp.status_code != 200:
+        logger.warning("FRED svarade %s för %s", resp.status_code, url)
+        return None
+    try:
+        series = parse_fred_csv(resp.text)
+    except Exception:
+        logger.warning("Kunde inte tolka FRED-CSV för %s", series_id, exc_info=True)
+        return None
+    return None if series.empty else series.rename("CLI")

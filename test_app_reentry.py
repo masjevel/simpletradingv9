@@ -30,6 +30,7 @@ def app_with_cycles(monkeypatch):
     fake.fetch_vix = lambda: vix
     fake.fetch_fx_rate = lambda: pd.Series(10.0, index=dates)
     fake.fetch_riksbank_rate = lambda *a, **k: pd.Series(0.01, index=pd.date_range('1995-01-02', '2030-12-31', freq='B'))
+    fake.fetch_us_cli = lambda *a, **k: None
     fake.fetch_ki_barometer = lambda: ki
     monkeypatch.setitem(sys.modules, "data", fake)
     return AppTest.from_file(str(Path(__file__).with_name("app.py")), default_timeout=90).run()

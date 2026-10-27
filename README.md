@@ -1,3 +1,24 @@
+# Uppdaterad version – 26 oktober 2026 (kväll)
+
+## Nytt: USA som signalkälla, snabbare månadssparande och belopp med mellanslag
+
+**USA – OECD:s ledande indikator (CLI).** Under *Portföljbacktest → KI-signal → Signalkälla* kan du välja USA i stället
+för KI. OECD:s CLI för USA hämtas gratis från FRED (ingen nyckel, OECD-data är öppna). Den svänger bara några enheter
+runt 100 och räknas därför om till KI:s skala: 100 = normalt, 110 = en standardavvikelse över normalt. Omräkningen
+använder bara historik som fanns vid varje tidpunkt. Samma gränser, återköp, robusthetstest och månadssparande fungerar
+som för KI. Publiceringsfördröjningen är 15 dagar som standard (OECD publicerar i mitten av månaden efter). CLI revideras
+mycket i efterhand, så backtestet blir något bättre än verkligheten. Nya fördjupningen *USA med längsta historik* kör
+modellen på S&P 500-fonden SPY i SEK.
+
+**Månadssparande.** Sparplanen fylls i ett formulär och räknas först när du trycker **Beräkna sparplanen**. Fliken räknar
+bara om sin egen del, så det går på någon sekund i stället för att hela appen laddas om vid varje ändring.
+
+**Belopp.** Skriv 10000 eller 10 000 – fälten visar 10 000. Alla kronbelopp och graferna använder mellanslag.
+
+**Verifiering:** 165 automatiska tester passerar (syntetiska data, nätverk spärrat).
+
+---
+
 # Uppdaterad version – 26 oktober 2026
 
 ## Nytt: månadssparande, historisk ränta och portföljens egen trend
@@ -244,6 +265,8 @@ backtest.py     Backtestmotor för den tekniska modellen (RSI/MACD/VIX)
 ki_model.py     KI-signalens state machine + flera återköpsregler
 reentry.py      Kombinerat återköp i steg (KI, VIX, kredit, RSI, trend, tidsspärr) på daglig kalender
 portfolio.py    Backtestmotor för KI-portföljstrategin (helt separat från backtest.py)
+savings.py      Månadssparande: sparplan, insättningar, XIRR och tidsviktad avkastning, belopp med mellanslag
+signal_sources.py  Alternativ signal: OECD CLI för USA omräknad till KI-skala utan look-ahead
 metrics.py      CAGR, MDD, Sharpe, Sortino, Calmar, Win Rate, Profit Factor m.fl.
 charts.py       Plotly-figurer (inga Streamlit-anrop)
 test_*.py       Pytest-svit med syntetisk data (i projektroten)
@@ -265,6 +288,8 @@ importerar **inte** Streamlit och går att testa/köra helt fristående.
 | Valutakurs | Yahoo Finance | `USDSEK=X` | Används för att konvertera portföljen till SEK |
 | Kreditspread (valfritt) | Yahoo Finance | `HYG`, `IEF` | Kvoten HYG/IEF; hämtas bara när kreditsteget är på. HYG finns från 2007 |
 | Räntekonto (historisk ränta) | Riksbankens öppna API (SWEA) | `SETB3MBENCH` | 3-månaders statsskuldväxel, daglig från 1983. Gratis, ingen nyckel |
+| Signalkälla USA (valfritt) | FRED (OECD) | `USALOLITOAASTSAM` | OECD Composite Leading Indicator för USA, månadsdata från 1955. Gratis CSV, ingen nyckel |
+| USA med längsta historik | Yahoo Finance | `SPY` | S&P 500-fond, USD, utdelningsjusterad, räknas om till SEK |
 
 **Varför ETF-proxys och inte råa index?** Rena prisindex (t.ex. `^OMX`) inkluderar inte
 utdelningar och överskattar därmed hur mycket sämre en avriskad/defensiv strategi ser ut

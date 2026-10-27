@@ -40,6 +40,45 @@ class SavingsPlan:
     extra: list = field(default_factory=list)  # [(datum, belopp), ...]
 
 
+def format_amount(x: float) -> str:
+    """10000 -> '10 000' (mellanslag som tusentalsavgränsare, inga decimaler)."""
+    if x is None or not np.isfinite(x):
+        return ""
+    return f"{x:,.0f}".replace(",", " ")
+
+
+def parse_amount(text) -> float | None:
+    """Tolkar belopp som '10 000', '10000', '10 000 kr', '10.000', '1 234,50'. None om det inte går.
+
+    Mellanslag, hårda mellanslag, apostrofer och 'kr' tas bort. Komma är decimaltecken. En punkt följd av
+    exakt tre siffror tolkas som tusentalsavgränsare (10.000 = tiotusen); flera punkter likaså.
+    """
+    if text is None:
+        return None
+    if isinstance(text, (int, float)) and not isinstance(text, bool):
+        return float(text) if np.isfinite(text) else None
+    t = str(text).strip().lower().replace("kr", "").replace("sek", "")
+    for ch in (" ", "\u00a0", "\u202f", "'", "_"):
+        t = t.replace(ch, "")
+    if not t:
+        return None
+    if t.count(".") > 1:
+        t = t.replace(".", "")
+    elif t.count(".") == 1 and "," not in t:
+        whole, frac = t.split(".")
+        if len(frac) == 3 and whole:
+            t = whole + frac
+    if "," in t:
+        if t.count(",") > 1:
+            return None
+        t = t.replace(".", "").replace(",", ".")
+    try:
+        v = float(t)
+    except ValueError:
+        return None
+    return v if np.isfinite(v) and v >= 0 else None
+
+
 EXTRA_COLUMNS = ["Datum", "Belopp (kr)", "Beskrivning"]
 
 
