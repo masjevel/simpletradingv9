@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 
 import numpy as np
 import pandas as pd
@@ -673,7 +674,11 @@ with tab4:
             st.error("❌ Kunde inte hämta USD/SEK-växelkurs. KI-portföljbacktesten kan inte köras just nu.")
         elif signal_df is None or signal_df.empty:
             if us_source:
-                st.error("❌ OECD:s ledande indikator för USA kunde inte hämtas från FRED just nu. Välj Sverige som signalkälla eller försök igen senare.")
+                _reason = getattr(sys.modules.get("data"), "last_error", lambda _k: None)("us_cli")
+                st.error("❌ OECD:s ledande indikator för USA kunde inte hämtas just nu. Appen försöker igen vid nästa sidladdning. "
+                         "Välj Sverige som signalkälla så länge." + (f"\n\nOrsak: {_reason}" if _reason else ""))
+                st.caption("Reserv: med en gratis API-nyckel från FRED (fredaccount.stlouisfed.org) kan appen hämta samma serie därifrån. "
+                           "Lägg den i .streamlit/secrets.toml som FRED_API_KEY = \"din-nyckel\" (på Streamlit Cloud: App settings → Secrets).")
             else:
                 st.error("❌ KI-barometerdata saknas (se KI-modellen – Konjunktur). KI-portföljbacktesten kan inte köras just nu.")
         else:
@@ -691,7 +696,7 @@ with tab4:
             st.caption(f"Faktisk backteststart och slut: {prices_df.index.min().date()} till {prices_df.index.max().date()} · Basvaluta: {config.DEFAULT_BASE_CURRENCY}"
                        + f" · Signalkälla: {config.SIGNAL_SOURCES[pf_signal_source]} (senaste månad {signal_df.index.max():%Y-%m})")
             if us_source:
-                st.caption(f"Källa: {config.US_CLI_LABEL}. OECD-data är öppna (CC BY 4.0). Värdena är omräknade till KI-skala och kan vara reviderade i efterhand.")
+                st.caption(f"Källa: {config.US_CLI_LABEL}, OECD:s öppna API. OECD-data är öppna (CC BY 4.0). Värdena är omräknade till KI-skala och kan vara reviderade i efterhand.")
 
             st.caption(f"Kostnad per omsatt aktievärde: courtage {pf_cost_bps:g} + slippage {pf_slippage_bps:g} bps, även initialköp och Buy & Hold-rebalansering. Riskfri ränta: {risk_free_annual:.1%}.")
 

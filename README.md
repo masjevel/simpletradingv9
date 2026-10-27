@@ -1,9 +1,20 @@
+# Uppdaterad version – 27 oktober 2026
+
+**Rättat:** USA-signalen hämtas nu från OECD:s eget öppna API. FRED slutade under 2026 att lämna ut CSV-filer utan
+API-nyckel (svarar 403), vilket gav felet "kunde inte hämtas". Om OECD inte svarar kan appen som reserv använda FRED:s
+API med en gratis personlig nyckel: skapa den på fredaccount.stlouisfed.org och lägg den i `.streamlit/secrets.toml`
+som `FRED_API_KEY = "din-nyckel"` (på Streamlit Cloud: *App settings → Secrets*). Ett misslyckat försök att hämta data
+(KI, Riksbanken, OECD, Yahoo) sparas inte längre i cachen, så appen försöker igen vid nästa sidladdning i stället för
+att visa felet i upp till ett dygn. Felmeddelandet visar nu orsaken (t.ex. "OECD svarade 503").
+
+---
+
 # Uppdaterad version – 26 oktober 2026 (kväll)
 
 ## Nytt: USA som signalkälla, snabbare månadssparande och belopp med mellanslag
 
 **USA – OECD:s ledande indikator (CLI).** Under *Portföljbacktest → KI-signal → Signalkälla* kan du välja USA i stället
-för KI. OECD:s CLI för USA hämtas gratis från FRED (ingen nyckel, OECD-data är öppna). Den svänger bara några enheter
+för KI. OECD:s CLI för USA hämtas gratis från OECD:s öppna API (ingen nyckel, OECD-data är öppna). Den svänger bara några enheter
 runt 100 och räknas därför om till KI:s skala: 100 = normalt, 110 = en standardavvikelse över normalt. Omräkningen
 använder bara historik som fanns vid varje tidpunkt. Samma gränser, återköp, robusthetstest och månadssparande fungerar
 som för KI. Publiceringsfördröjningen är 15 dagar som standard (OECD publicerar i mitten av månaden efter). CLI revideras
@@ -288,7 +299,7 @@ importerar **inte** Streamlit och går att testa/köra helt fristående.
 | Valutakurs | Yahoo Finance | `USDSEK=X` | Används för att konvertera portföljen till SEK |
 | Kreditspread (valfritt) | Yahoo Finance | `HYG`, `IEF` | Kvoten HYG/IEF; hämtas bara när kreditsteget är på. HYG finns från 2007 |
 | Räntekonto (historisk ränta) | Riksbankens öppna API (SWEA) | `SETB3MBENCH` | 3-månaders statsskuldväxel, daglig från 1983. Gratis, ingen nyckel |
-| Signalkälla USA (valfritt) | FRED (OECD) | `USALOLITOAASTSAM` | OECD Composite Leading Indicator för USA, månadsdata från 1955. Gratis CSV, ingen nyckel |
+| Signalkälla USA (valfritt) | OECD:s öppna SDMX-API (reserv: FRED-API med gratis nyckel) | `USA.M.LI...AA...H` (FRED: `USALOLITOAASTSAM`) | OECD Composite Leading Indicator för USA, månadsdata från 1955. Ingen nyckel krävs hos OECD |
 | USA med längsta historik | Yahoo Finance | `SPY` | S&P 500-fond, USD, utdelningsjusterad, räknas om till SEK |
 
 **Varför ETF-proxys och inte råa index?** Rena prisindex (t.ex. `^OMX`) inkluderar inte

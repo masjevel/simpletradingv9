@@ -15,7 +15,11 @@
 
 from __future__ import annotations
 
+import functools
+import io
+import json
 import logging
+import os
 from functools import lru_cache
 
 import numpy as np
@@ -23,7 +27,7 @@ import pandas as pd
 import requests
 import yfinance as yf
 
-from config import FRED_CSV_URL, FX_TICKER, RIKSBANK_API_BASE, RIKSBANK_RATE_SERIES, US_CLI_SERIES
+from config import FRED_API_URL, FX_TICKER, OECD_CLI_URL, RIKSBANK_API_BASE, RIKSBANK_RATE_SERIES, US_CLI_SERIES
 
 logger = logging.getLogger("simpletradingv3.data")
 logging.basicConfig(level=logging.INFO)
@@ -49,6 +53,47 @@ class DataFetchError(Exception):
     """Kastas vid fel som anroparen (UI-lagret) behöver visa begripligt för användaren."""
 
 
+class _NotCached(Exception):
+    """Intern signal: resultatet var None och ska inte sparas i cachen."""
+
+
+_LAST_ERRORS: dict[str, str] = {}
+
+
+def last_error(name: str) -> str | None:
+    """Senaste felorsak för en datakälla (t.ex. 'us_cli'), för tydligare felmeddelanden i UI."""
+    return _LAST_ERRORS.get(name)
+
+
+def _cache_success(ttl: int = 3600, show_spinner: str | bool = True):
+    """Som _cache_data, men ett misslyckat anrop (None) sparas inte: nästa sidladdning försöker igen.
+
+    Tidigare sparades None i upp till ett dygn, så ett tillfälligt fel hos t.ex. KI eller Riksbanken
+    låg kvar långt efter att källan fungerade igen.
+    """
+    def decorator(func):
+        def cached(*args, **kwargs):
+            result = func(*args, **kwargs)
+            if result is None:
+                raise _NotCached()
+            return result
+        cached.__name__ = func.__name__ + "_cached"
+        cached.__qualname__ = func.__qualname__ + "_cached"
+        cached.__module__ = func.__module__
+        cached = _cache_data(ttl=ttl, show_spinner=show_spinner)(cached)
+
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            try:
+                return cached(*args, **kwargs)
+            except _NotCached:
+                return None
+
+        wrapper.clear = getattr(cached, "clear", None) or getattr(cached, "cache_clear", lambda: None)
+        return wrapper
+    return decorator
+
+
 def _flatten_close(raw: pd.DataFrame, column: str = "Close") -> pd.Series:
     """Hanterar yfinance MultiIndex-kolumner robust."""
     if isinstance(raw.columns, pd.MultiIndex):
@@ -72,7 +117,7 @@ def _download(symbol: str, start: str = "2000-01-01") -> pd.DataFrame:
     return raw
 
 
-@_cache_data(ttl=3600, show_spinner="Hämtar marknadsdata...")
+@_cache_success(ttl=3600, show_spinner="Hämtar marknadsdata...")
 def fetch_price_series(symbol: str, start: str = "2000-01-01") -> pd.DataFrame | None:
     """
     Hämtar Close (och Open om tillgänglig) för en enskild ticker.
@@ -94,7 +139,7 @@ def fetch_price_series(symbol: str, start: str = "2000-01-01") -> pd.DataFrame |
     return df
 
 
-@_cache_data(ttl=3600, show_spinner="Hämtar VIX...")
+@_cache_success(ttl=3600, show_spinner="Hämtar VIX...")
 def fetch_vix(start: str = "2000-01-01") -> pd.Series | None:
     df = fetch_price_series("^VIX", start=start)
     if df is None:
@@ -102,7 +147,7 @@ def fetch_vix(start: str = "2000-01-01") -> pd.Series | None:
     return df["Close"].rename("VIX")
 
 
-@_cache_data(ttl=3600, show_spinner="Hämtar valutakurs (USD/SEK)...")
+@_cache_success(ttl=3600, show_spinner="Hämtar valutakurs (USD/SEK)...")
 def fetch_fx_rate(start: str = "2000-01-01", pair: str = FX_TICKER) -> pd.Series | None:
     df = fetch_price_series(pair, start=start)
     if df is None:
@@ -110,7 +155,7 @@ def fetch_fx_rate(start: str = "2000-01-01", pair: str = FX_TICKER) -> pd.Series
     return df["Close"].rename("FX")
 
 
-@_cache_data(ttl=86400, show_spinner="Hämtar Konjunkturbarometer från KI...")
+@_cache_success(ttl=86400, show_spinner="Hämtar Konjunkturbarometer från KI...")
 def fetch_ki_barometer() -> pd.DataFrame | None:
     """
     Hämtar Barometerindikatorn via Konjunkturinstitutets PXWeb-API.
@@ -244,7 +289,7 @@ def parse_riksbank_observations(payload) -> pd.Series:
     return s[~s.index.duplicated(keep="last")]
 
 
-@_cache_data(ttl=86400, show_spinner="Hämtar historisk ränta från Riksbanken...")
+@_cache_success(ttl=86400, show_spinner="Hämtar historisk ränta från Riksbanken...")
 def fetch_riksbank_rate(series_id: str = RIKSBANK_RATE_SERIES, start: str = "1995-01-01") -> pd.Series | None:
     """Daglig svensk kortränta från Riksbankens öppna API (SWEA), som årsränta i decimalform.
 
@@ -272,36 +317,130 @@ def fetch_riksbank_rate(series_id: str = RIKSBANK_RATE_SERIES, start: str = "199
     return series
 
 
-def parse_fred_csv(text: str) -> pd.Series:
-    """Tolkar FRED:s CSV (datum, värde). '.' betyder saknat värde. Månadsdatum flyttas till månadens sista dag,
-    samma tidsstämpel som KI-serien, så att publiceringsfördröjningen räknas från månadsslut."""
-    import io
-    df = pd.read_csv(io.StringIO(text))
-    if df.shape[1] < 2:
-        return pd.Series(dtype=float, name="Value")
-    dates = pd.to_datetime(df.iloc[:, 0], errors="coerce")
-    values = pd.to_numeric(df.iloc[:, 1], errors="coerce")
-    s = pd.Series(values.to_numpy(), index=dates, name="Value").dropna()
-    s = s[s.index.notna()]
-    s.index = pd.DatetimeIndex([pd.Period(d, freq="M").end_time.normalize() for d in s.index])
+def _month_end(index) -> pd.DatetimeIndex:
+    return pd.DatetimeIndex([pd.Period(d, freq="M").end_time.normalize() for d in pd.to_datetime(index)])
+
+
+def parse_oecd_sdmx_csv(text: str) -> pd.Series:
+    """Tolkar SDMX-CSV från OECD (kolumner TIME_PERIOD och OBS_VALUE). Månad -> månadens sista dag.
+
+    Om svaret innehåller flera serier väljs den som matchar USA / LI / AA och har flest observationer.
+    """
+    df = pd.read_csv(io.StringIO(text), dtype=str)
+    if "TIME_PERIOD" not in df.columns or "OBS_VALUE" not in df.columns:
+        raise ValueError("Oväntat format från OECD (saknar TIME_PERIOD/OBS_VALUE).")
+    for col, want in (("REF_AREA", "USA"), ("MEASURE", "LI"), ("ADJUSTMENT", "AA"), ("FREQ", "M")):
+        if col in df.columns and (df[col] == want).any():
+            df = df[df[col] == want]
+    dims = [c for c in df.columns if c not in ("TIME_PERIOD", "OBS_VALUE") and df[c].nunique(dropna=False) > 1
+            and c.isupper() and not c.startswith("OBS_")]
+    if dims:
+        best = df.groupby(dims, dropna=False).size().idxmax()
+        best = best if isinstance(best, tuple) else (best,)
+        for c, v in zip(dims, best):
+            df = df[df[c] == v]
+    values = pd.to_numeric(df["OBS_VALUE"], errors="coerce")
+    s = pd.Series(values.to_numpy(), index=_month_end(df["TIME_PERIOD"]), name="CLI").dropna()
     return s[~s.index.duplicated(keep="last")].sort_index()
 
 
-@_cache_data(ttl=86400, show_spinner="Hämtar OECD:s ledande indikator för USA...")
+def parse_oecd_sdmx_json(payload) -> pd.Series:
+    """Tolkar SDMX-JSON från OECD (både 1.0 med 'structure' och 2.0 med 'structures').
+
+    Väljer serien med flest observationer. Tidsdimensionen (TIME_PERIOD) ger månaden.
+    """
+    data = payload.get("data", payload) if isinstance(payload, dict) else {}
+    datasets = data.get("dataSets") or []
+    structure = data.get("structure") or (data.get("structures") or [None])[0]
+    if not datasets or not structure:
+        raise ValueError("Oväntat JSON-format från OECD.")
+    obs_dims = structure.get("dimensions", {}).get("observation", [])
+    time_dim = next((dmn for dmn in obs_dims if dmn.get("id") == "TIME_PERIOD"), obs_dims[0] if obs_dims else None)
+    if time_dim is None:
+        raise ValueError("OECD-svaret saknar tidsdimension.")
+    periods = [v.get("id") for v in time_dim.get("values", [])]
+    series_map = datasets[0].get("series") or {}
+    if not series_map:
+        raise ValueError("OECD-svaret saknar serier.")
+    best = max(series_map.values(), key=lambda s: len(s.get("observations", {})))
+    rows = []
+    for k, vals in best.get("observations", {}).items():
+        idx = int(str(k).split(":")[0])
+        if idx < len(periods) and vals and vals[0] is not None:
+            rows.append((periods[idx], float(vals[0])))
+    if not rows:
+        return pd.Series(dtype=float, name="CLI")
+    s = pd.Series([v for _, v in rows], index=_month_end([p for p, _ in rows]), name="CLI")
+    return s[~s.index.duplicated(keep="last")].sort_index()
+
+
+def parse_fred_observations(payload) -> pd.Series:
+    """Tolkar FRED-API:ts JSON {"observations": [{"date": "2026-09-01", "value": "100.99"}, ...]}."""
+    obs = (payload or {}).get("observations", [])
+    rows = [(o.get("date"), pd.to_numeric(o.get("value"), errors="coerce")) for o in obs if isinstance(o, dict)]
+    s = pd.Series([v for _, v in rows], index=_month_end([d for d, _ in rows]) if rows else pd.DatetimeIndex([]), name="CLI", dtype=float)
+    s = s.dropna()
+    return s[~s.index.duplicated(keep="last")].sort_index()
+
+
+def _fred_api_key() -> str | None:
+    key = os.environ.get("FRED_API_KEY")
+    if key:
+        return key.strip()
+    if _HAS_STREAMLIT:
+        try:
+            return str(st.secrets["FRED_API_KEY"]).strip()
+        except Exception:
+            return None
+    return None
+
+
+@_cache_success(ttl=86400, show_spinner="Hämtar OECD:s ledande indikator för USA...")
 def fetch_us_cli(series_id: str = US_CLI_SERIES) -> pd.Series | None:
-    """OECD Composite Leading Indicator för USA från FRED (gratis CSV, ingen nyckel). None vid fel."""
-    url = FRED_CSV_URL.format(series=series_id)
-    try:
-        resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0", "Accept": "text/csv"}, timeout=20)
-    except Exception:
-        logger.warning("FRED kunde inte nås (%s).", url, exc_info=True)
-        return None
-    if resp.status_code != 200:
-        logger.warning("FRED svarade %s för %s", resp.status_code, url)
-        return None
-    try:
-        series = parse_fred_csv(resp.text)
-    except Exception:
-        logger.warning("Kunde inte tolka FRED-CSV för %s", series_id, exc_info=True)
-        return None
-    return None if series.empty else series.rename("CLI")
+    """OECD:s ledande indikator (CLI) för USA. Först OECD:s öppna API (ingen nyckel), sedan FRED om en
+    gratis FRED-nyckel finns. Returnerar None vid fel; orsaken finns i last_error("us_cli")."""
+    reasons = []
+    attempts = [(OECD_CLI_URL + "&format=csvfile", {}, parse_oecd_sdmx_csv),
+                (OECD_CLI_URL + "&format=jsondata", {}, lambda text: parse_oecd_sdmx_json(json.loads(text)))]
+    for url, headers, parser in attempts:
+        try:
+            resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0 analysverktyg", **headers}, timeout=30)
+        except Exception as exc:
+            reasons.append(f"OECD kunde inte nås ({type(exc).__name__})")
+            logger.warning("OECD-API kunde inte nås (%s).", url, exc_info=True)
+            continue
+        if resp.status_code != 200:
+            reasons.append(f"OECD svarade {resp.status_code}")
+            logger.warning("OECD-API svarade %s för %s", resp.status_code, url)
+            continue
+        try:
+            series = parser(resp.text)
+        except Exception as exc:
+            reasons.append(f"OECD-svaret kunde inte tolkas ({exc})")
+            logger.warning("Kunde inte tolka OECD-svaret från %s", url, exc_info=True)
+            continue
+        if not series.empty:
+            _LAST_ERRORS.pop("us_cli", None)
+            return series
+        reasons.append("OECD gav inga observationer")
+
+    key = _fred_api_key()
+    if key:
+        try:
+            resp = requests.get(FRED_API_URL, params={"series_id": series_id, "api_key": key, "file_type": "json"}, timeout=30)
+            if resp.status_code == 200:
+                series = parse_fred_observations(resp.json())
+                if not series.empty:
+                    _LAST_ERRORS.pop("us_cli", None)
+                    return series
+                reasons.append("FRED gav inga observationer")
+            else:
+                reasons.append(f"FRED svarade {resp.status_code}")
+        except Exception as exc:
+            reasons.append(f"FRED kunde inte nås ({type(exc).__name__})")
+            logger.warning("FRED-API misslyckades", exc_info=True)
+    else:
+        reasons.append("ingen FRED-nyckel angiven (valfri reserv)")
+    _LAST_ERRORS["us_cli"] = "; ".join(reasons)
+    logger.error("OECD CLI för USA kunde inte hämtas: %s", _LAST_ERRORS["us_cli"])
+    return None

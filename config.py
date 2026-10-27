@@ -131,10 +131,14 @@ SIGNAL_SOURCES = {
 }
 DEFAULT_SIGNAL_SOURCE = "ki"
 # OECD Composite Leading Indicator för USA, amplitudjusterad (normal = 100), månadsdata från 1955.
-# Hämtas gratis som CSV från FRED (ingen nyckel). OECD-data är öppna (CC BY 4.0) – ange källan.
-US_CLI_SERIES = "USALOLITOAASTSAM"
-FRED_CSV_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id={series}"
-US_CLI_LABEL = "OECD Composite Leading Indicator, USA (via FRED, USALOLITOAASTSAM)"
+# Primär källa: OECD:s öppna SDMX-API (gratis, ingen nyckel, OECD-data är öppna under CC BY 4.0).
+# Reserv: FRED:s API med en GRATIS personlig nyckel (FRED stoppade nedladdning utan nyckel 2026).
+#   Lägg nyckeln i .streamlit/secrets.toml som  FRED_API_KEY = "..."  eller i miljövariabeln FRED_API_KEY.
+US_CLI_SERIES = "USALOLITOAASTSAM"  # FRED-id för samma serie
+OECD_CLI_URL = ("https://sdmx.oecd.org/public/rest/data/OECD.SDD.STES,DSD_STES@DF_CLI,4.1/"
+                "USA.M.LI...AA...H?startPeriod=1955-01")
+FRED_API_URL = "https://api.stlouisfed.org/fred/series/observations"
+US_CLI_LABEL = "OECD Composite Leading Indicator, USA (amplitudjusterad)"
 # OECD publicerar CLI ungefär i mitten av månaden efter (t.ex. septembervärdet 15 oktober).
 DEFAULT_US_CLI_LAG_DAYS = 15
 # CLI svänger bara några enheter runt 100. Den räknas om till KI:s skala (100 + 10 × standardavvikelser)
@@ -305,7 +309,7 @@ PARAM_HELP = {
         "För USA (OECD CLI) är standard 15 dagar, eftersom OECD publicerar ungefär i mitten av månaden efter."),
     "pf_signal_source": ("Signalkälla",
         "Vilken konjunkturindikator som styr sälj och återköp. Sverige = KI:s Barometerindikator. USA = OECD:s ledande "
-        "indikator (CLI), omräknad till samma skala som KI: 100 = normalt, 110 = 1 standardavvikelse över normalt.",
+        "indikator (CLI) från OECD:s öppna API, omräknad till samma skala som KI: 100 = normalt, 110 = 1 standardavvikelse över normalt.",
         "Din Global-portfölj är till största delen USA, så en amerikansk indikator kan passa den bättre. CLI revideras mycket i "
         "efterhand, så backtestet blir något bättre än verkligheten. Testa gärna båda och jämför i robusthetstestet."),
     "pf_us_long": ("USA med längsta historik",

@@ -1,5 +1,16 @@
 # Genomförda ändringar och kvalitetskontroll
 
+## 27 oktober 2026 – USA-signalen hämtas från OECD, fel cachas inte
+
+- **Fel:** FRED svarar sedan 2026 med 403 på nedladdning av CSV utan API-nyckel, så USA-signalen gick inte att hämta.
+- `data.fetch_us_cli` hämtar nu från OECD:s öppna SDMX-API (`OECD.SDD.STES,DSD_STES@DF_CLI,4.1`, nyckel
+  `USA.M.LI...AA...H`), först som CSV och sedan som SDMX-JSON. Reserv: FRED-API:t med gratis nyckel (`FRED_API_KEY` i
+  Streamlit secrets eller miljövariabel). Orsaken till ett fel visas i appen (`data.last_error`).
+- **Cache:** alla hämtningar använder `_cache_success`: lyckade svar cachas som förut, men ett misslyckande (None) sparas
+  inte längre. Tidigare kunde ett tillfälligt fel hos KI, Riksbanken eller OECD ligga kvar i upp till ett dygn.
+- Nya tester: OECD-CSV och SDMX-JSON (1.0 och 2.0), val av serie, ordningen OECD → FRED, felorsak, och att fel inte cachas
+  medan lyckade svar gör det.
+
 ## 26 oktober 2026 (kväll) – USA som signalkälla, snabbare sparflik och belopp med mellanslag
 
 - **Signalkälla USA – OECD CLI** (`signal_sources.py`, `data.fetch_us_cli`): OECD:s ledande indikator för USA
